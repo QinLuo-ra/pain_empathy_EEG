@@ -1,0 +1,167 @@
+%%多个被试、多个通道多种情况时频变换结果的汇总！！！
+clear;clc;close all
+
+Subj = 43; %填入被试数目
+f = 1:30;
+winsize = 0.200;
+Cond = {'sti3_1', 'sti3_2'};
+data_path = 'D:\painempathy\data\ASD_TF_add\6epoched_merged';
+%将数据所在的路径定义为工作路径
+cd(data_path)
+%筛选当前路径下所有的vhdr结尾的文件
+files = dir('*.set');
+%提取文件名
+fn = {files.name};
+% 对于每个被试
+for i=1:length(fn)
+   % 构建完整的文件路径
+   filePath = fullfile(data_path, fn{i});
+   % 导入set格式的数据
+   EEG = pop_loadset('filename', fn{i}, 'filepath', data_path);
+   EEG = eeg_checkset(EEG);
+   xtimes=EEG.times/1000;
+    t=EEG.times/1000;
+    Fs = EEG.srate;
+    %提取epoch
+    %对于每个条件：属于L1情况的数据都提取出来
+    for j=1:length(Cond)
+        EEG_new = pop_epoch( EEG, Cond(j), [-.5 1.5], 'newname','merged data')
+        EEG_new = eeg_checkset( EEG_new);
+        EEG_new = pop_rmbase( EEG_new, [-250 0]);
+        EEG_new = eeg_checkset( EEG_new);
+        %对于每个通道 STFT 时频分析
+        for nchan=1:size(EEG_new.data,1)
+            x = squeeze(EEG_new.data(nchan,:,:));
+            [~,P] = sub_stft(x, xtimes, t, f, Fs, winsize);
+            %被试 * 条件 * 通道 * 频率 * 时间
+            P_data(i,j,nchan,:,:)=squeeze(mean(P,3));
+        end
+    end
+end
+
+%%基线校正
+t_pre_idx=(t>=-0.5)&(t<=-0);
+for i=1:size(P_data,1)%%第一个被试
+   for j=1:size(P_data,2)%%第一个条件
+      for ii=1:size(P_data,3)%%第一个通道
+          for jj=1:size(P_data,4)%%第一个频率点
+          temp_data=squeeze(P_data(i,j,ii,jj,:));%%3000个时间点的数据提取出来作为一维数组
+          P_BC(i,j,ii,jj,:)=temp_data-mean(temp_data(t_pre_idx));%%把第一个被试第一个通道的第一个频率点的数据提取出来作为一维数组除以均值之后赋值予P_BC
+         end
+      end
+   end
+end
+
+%%画出29号通道L2情况的组平均时频能量图
+
+aim = 'sti3_2';
+
+% for i=1:length(Cond)
+%     if  Cond(i)==aim
+%         cond_ind = i ;
+%         break
+%     end
+%     k=k+1;
+% end
+k = 1;
+for i = 1:length(Cond)
+    if strcmp(Cond{i}, aim)
+        cond_ind = i;
+        break
+    end
+    k = k + 1;
+end
+channel_plot=60;
+figure;
+imagesc(t*1000,f,squeeze(mean(P_BC(:,cond_ind,channel_plot,:,:),1)));%%第29个通道，mean把组平均掉，剩下时间和频率
+axis xy; colorbar;
+% imagesc(t*1000,f,squeeze(mean(P_BC(:,cond_ind,channel_plot,:,:),1)));%%第29个通道，mean把组平均掉，剩下时间和频率
+% axis xy; colorbar;
+xlabel('Time (ms)','fontsize',12);ylabel('Frequency (Hz)','fontsize',12);
+title('Baseline-corrected TFR','fontsize',12);
+
+
+%%在一张图上画出四种情况的0.2s-0.5s的alpha频段的组平均地形图
+limits=[-2,2];%color bar 范围 （不确定）
+ROI_t=[0.2 0.3]; ROI_f=[6 10];%时频范围，看参考文献
+ROI_t_idx=(t>=ROI_t(1))&(t<=ROI_t(2));%找到时间点的索引值
+ROI_f_idx=(f>=ROI_f(1))&(f<=ROI_f(2));%找到频率点的索引值
+TFD_plot=squeeze(mean(mean(mean(P_BC(:,:,:,ROI_f_idx,ROI_t_idx),1),4),5));%%P_BC包含组、条件、通道、频率点和时间，平均了频率和时间点和组，只保留通道和条件
+for j=1:length(Cond)
+    plot_data = TFD_plot(j,:);
+    subplot(2,2,j);
+    topoplot(plot_data,EEG.chanlocs,'maplimits',limits);
+    title([Cond(j),' TFD\_alpha'],'fontsize',18);
+    colorbar;
+end
+
+figure;
+subplot(1,2,1);
+topoplot(TFD_plot(1,:),EEG.chanlocs,'maplimits',[-2,2]);
+title('pain alpha','fontsize',18);
+colorbar;
+print(gcf, '-dtiff', 'timefreq_result.tif', '-r600');
+
+%%统计数据准备
+%准备工作
+clear all
+
+Subj=46; %填入被试数目
+Cond = {'sti3_1', 'sti3_2'};
+setpath=['D:\painempathy\data\TD_TF\6epoched\matching',filesep];
+save_path=['D:\painempathy\data\TD_TF\7P_BC',filesep];
+f=1:1:30
+winsize = 0.200;%将数据所在的路径定义为工作路径
+cd(setpath)
+%筛选当前路径下所有的vhdr结尾的文件
+files = dir('*.set');
+%提取文件名
+fn = {files.name};
+
+%数据汇总
+% 对于所有被试
+% 对于每个被试
+for i = 1:length(fn)
+    % 构建完整的文件路径
+    filePath = fullfile(setpath, fn{i});
+    % 导入set格式的数据
+    EEG = pop_loadset('filename', fn{i}, 'filepath', setpath);
+    EEG = eeg_checkset(EEG);
+    xtimes = EEG.times/1000;
+    t = EEG.times/1000;
+    Fs = EEG.srate;
+    % 对每个条件
+    for j=1:length(Cond)
+    % 对于每个条件：属于L1情况的数据都提取出来
+    EEG_new = pop_epoch( EEG, Cond(j), [-.5 1.5], 'newname','merged datasets');
+    EEG_new = eeg_checkset( EEG_new);
+    EEG_new = pop_rmbase( EEG_new, [-200 0]); % 基线校正
+    EEG_new = eeg_checkset( EEG_new);
+    
+    % 对于每个通道
+    for nchan=1:size(EEG_new.data,1)
+        x = squeeze(EEG_new.data(nchan,:,:));
+        [~,P] = sub_stft(x, xtimes, t, f, Fs, winsize);
+        
+        % 被试 * 条件 * 通道 * 频率 * 时间
+        P_data(i,j,nchan,:,:)=squeeze(mean(P,3)); % sftf结果（未进行基线校正）
+        end
+    end
+end
+
+%%基线校正
+t_pre_idx=(t>=-0.5)&(t<=0);
+for i=1:size(P_data,1)%%第一个被试
+   for j=1:size(P_data,2)%%第一个条件
+      for ii=1:size(P_data,3)%%第一个通道
+          for jj=1:size(P_data,4)%%第一个频率点
+              temp_data=squeeze(P_data(i,j,ii,jj,:));%%3000个时间点的数据提取出来作为一维数组
+              P_BC(i,j,ii,jj,:)=temp_data-mean(temp_data(t_pre_idx));%%把第一个被试第一个通道的第一个频率点的数据提取出来作为一维数组除以均值之后赋值予P_BC
+         end
+      end
+   end
+end
+
+
+%储存汇总数据
+save([save_path,'P_BC_merged_2_matching.mat'],'P_BC','t','f','EEG');
