@@ -1,0 +1,202 @@
+%% =========================================================================
+%       dwPLI Analysis script 
+%       Includes: automatic calculation of difference-in-differences + covariate matching
+%       by Qin Luo
+%% =========================================================================
+clear; clc; close all;
+warning('off', 'backtrace');
+
+% --- 1. 组别与路径自动对齐 ---
+group_type = 'ASD'; % ❗当前处理组别
+base_dir   = ['D:\painempathy\data\', group_type, '_TF\'];
+% ❗核心修正：指向真实的 ASD 数据存放路径
+setpath    = fullfile(base_dir, '6epoched', 'ERSP', filesep); 
+save_path  = fullfile(base_dir, '7P_BC', filesep);
+if ~exist(save_path, 'dir'), mkdir(save_path); end
+
+% --- 2. 参数与 ROI 设定 ---
+cond_names = {'sti3_1', 'sti3_2'}; 
+freqs = 1:1:30;
+num_cycles = linspace(3, 7, length(freqs)); 
+min_threshold = 30; % Number of trails
+ROIs.FZ = [6, 12, 60]; 
+ROIs.CZ = [20, 50, 65]; 
+ROIs.PZ = [34, 28, 42];
+
+win.Theta.t = [0.18 0.28]; win.Theta.f = [3 6];
+win.Alpha.t = [0.4 0.8];   win.Alpha.f = [7 10];
+
+files = dir(fullfile(setpath, '*.set'));
+if isempty(files)
+    error('❌ 错误：在路径 %s 中仍然没有找到 .set 文件，请检查拼写！', setpath);
+end
+
+%% --- Step 0: 严谨的 Trial 扫描与被试筛选 ---
+fprintf('--- Step 0: 正在扫描 %s 组 Trial 数 (阈值: %d) ---\n', group_type, min_threshold);
+valid_idx = [];
+trial_counts = [];
+for i = 1:length(files)
+    EEG_info = pop_loadset('filename', files(i).name, 'filepath', setpath, 'loadmode', 'info');
+    all_events = {EEG_info.event.type};
+    
+    if isnumeric(all_events{1})
+        all_events = cellfun(@num2str, all_events, 'UniformOutput', false);
+    end
+    
+    c1_n = sum(strcmp(all_events, cond_names{1}));
+    c2_n = sum(strcmp(all_events, cond_names{2}));
+    
+    if c1_n >= min_threshold && c2_n >= min_threshold
+        valid_idx = [valid_idx, i];
+        trial_counts = [trial_counts; c1_n, c2_n];
+    else
+        fprintf('  ⚠️ 剔除被试 %s: 试次不平衡 (N1=%d, N2=%d)\n', files(i).name, c1_n, c2_n);
+    end
+end
+files = files(valid_idx);
+num_subjs = length(files);
+target_n = min(trial_counts(:)); 
+fprintf('⚖️  平衡策略：剩余 %d 个被试，统一随机抽取至 %d 个 Trials。\n\n', num_subjs, target_n);
+
+%% --- Step 3: 核心分析主循环 ---
+results = cell(num_subjs, 14);
+for i = 1:num_subjs
+    fname = files(i).name;
+    fprintf('正在处理 [%d/%d]: %s\n', i, num_subjs, fname);
+    
+    EEG = pop_loadset('filename', fname, 'filepath', setpath);
+    fs = EEG.srate;
+    t_axis = EEG.times/1000;
+    
+    % --- 沿用 TD 版的 ID 提取逻辑 ---
+    parts = split(fname, '_');
+    id_idx = find(contains(parts, 'S') | contains(parts, 'T'), 1);
+    if isempty(id_idx), continue; end
+    subj_id = parts{id_idx}; 
+    
+    results{i, 1} = subj_id;
+    results{i, 2} = group_type;
+    
+    for c = 1:length(cond_names)
+        EEG_c = pop_epoch(EEG, cond_names(c), [-.5 1.5]);
+        
+        if EEG_c.trials > target_n
+            rng(1); 
+            EEG_c = pop_select(EEG_c, 'trial', randperm(EEG_c.trials, target_n));
+        end
+        
+        all_chans = unique([ROIs.FZ, ROIs.CZ, ROIs.PZ]);
+        tf_complex = zeros(length(all_chans), length(freqs), length(t_axis), target_n);
+        
+        for ch = 1:length(all_chans)
+            chan_data = squeeze(EEG_c.data(all_chans(ch), :, :));
+            if target_n == 1, chan_data = chan_data(:); end 
+            for f_idx = 1:length(freqs)
+                conv_res = energy_norm_wavelet(chan_data, fs, freqs(f_idx), num_cycles(f_idx));
+                tf_complex(ch, f_idx, :, :) = reshape(conv_res, [1, 1, length(t_axis), target_n]);
+            end
+        end
+        
+        off = (c-1)*6 + 2;
+        results{i, off+1} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.FZ, ROIs.CZ, freqs, t_axis, win.Theta);
+        results{i, off+2} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.CZ, ROIs.PZ, freqs, t_axis, win.Theta);
+        results{i, off+3} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.FZ, ROIs.PZ, freqs, t_axis, win.Theta);
+        results{i, off+4} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.FZ, ROIs.CZ, freqs, t_axis, win.Alpha);
+        results{i, off+5} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.CZ, ROIs.PZ, freqs, t_axis, win.Alpha);
+        results{i, off+6} = calc_masked_debiased_wpli(tf_complex, all_chans, ROIs.FZ, ROIs.PZ, freqs, t_axis, win.Alpha);
+    end
+end
+
+%% --- Step 4: 差异连通性计算与协变量匹配 ---
+fprintf('\n--- Step 4: 正在整理数据与匹配协变量 ---\n');
+
+% 剔除可能存在的空行
+empty_idx = cellfun(@isempty, results(:,1));
+results(empty_idx, :) = [];
+
+col_names = {'ID','Group','Neu_FC_T','Neu_CP_T','Neu_FP_T','Neu_FC_A','Neu_CP_A','Neu_FP_A',...
+             'Pain_FC_T','Pain_CP_T','Pain_FP_T','Pain_FC_A','Pain_CP_A','Pain_FP_A'};
+T_wPLI = cell2table(results, 'VariableNames', col_names);
+
+% --- 差异波计算 (Pain - Neutral) ---
+fprintf('  -> 正在计算差异连通性 (Pain - Neutral)...\n');
+T_wPLI.Diff_FC_T = T_wPLI.Pain_FC_T - T_wPLI.Neu_FC_T; 
+T_wPLI.Diff_CP_T = T_wPLI.Pain_CP_T - T_wPLI.Neu_CP_T; 
+T_wPLI.Diff_FP_T = T_wPLI.Pain_FP_T - T_wPLI.Neu_FP_T; 
+
+T_wPLI.Diff_FC_A = T_wPLI.Pain_FC_A - T_wPLI.Neu_FC_A; 
+T_wPLI.Diff_CP_A = T_wPLI.Pain_CP_A - T_wPLI.Neu_CP_A; 
+T_wPLI.Diff_FP_A = T_wPLI.Pain_FP_A - T_wPLI.Neu_FP_A; 
+
+% --- 读取并匹配 IQ 表 ---
+iq_path = fullfile(base_dir, '7P_BC', [group_type, '_IQ.xlsx']);
+if exist(iq_path, 'file')
+    T_IQ = readtable(iq_path);
+    
+    % 安全字符串转换补丁 (防止 Excel ID 格式问题)
+    if isnumeric(T_wPLI.ID), T_wPLI.ID = cellstr(string(T_wPLI.ID)); 
+    else, T_wPLI.ID = cellstr(T_wPLI.ID); end
+    
+    if isnumeric(T_IQ.ID), T_IQ.ID = cellstr(string(T_IQ.ID)); 
+    else, T_IQ.ID = cellstr(T_IQ.ID); end
+    
+    % Left Join 匹配
+    T_Final = outerjoin(T_wPLI, T_IQ, 'Keys', 'ID', 'Type', 'left', 'MergeKeys', true);
+    
+    if ismember('Group_T_wPLI', T_Final.Properties.VariableNames)
+        T_Final.Properties.VariableNames{'Group_T_wPLI'} = 'Group';
+        if ismember('Group_T_IQ', T_Final.Properties.VariableNames)
+            T_Final.Group_T_IQ = []; 
+        end
+    end
+    
+    fprintf('✅ 协变量匹配完成！有效被试总数: %d\n', height(T_Final));
+else
+    warning('未找到协变量文件: %s。仅导出 wPLI 及差异波数据。', iq_path);
+    T_Final = T_wPLI;
+end
+
+% --- 导出最终表 ---
+csv_name = fullfile(save_path, ['wPLI_Final_with_Covariates_', group_type, '.csv']);
+writetable(T_Final, csv_name);
+fprintf('\n🚀 任务圆满完成！包含差异波的数据已存至: %s\n', csv_name);
+
+%% =========================================================================
+%   底层函数库
+% =========================================================================
+function tf_out = energy_norm_wavelet(data, fs, freq, cycles)
+    s = cycles / (2 * pi * freq);
+    t = -3*s : 1/fs : 3*s; 
+    wavelet = exp(2*1i*pi*freq.*t) .* exp(-t.^2 ./ (2*s^2));
+    wavelet = wavelet ./ sqrt(sum(abs(wavelet).^2)); 
+    num_trials = size(data, 2);
+    tf_out = zeros(length(data), num_trials);
+    for tr = 1:num_trials
+        tf_out(:, tr) = conv(data(:,tr), wavelet, 'same');
+    end
+end
+
+function out_avg = calc_masked_debiased_wpli(tf, chan_list, g1, g2, f_vec, t_vec, win)
+    idx1 = find(ismember(chan_list, g1));
+    idx2 = find(ismember(chan_list, g2));
+    f_idx = find(f_vec >= win.f(1) & f_vec <= win.f(2));
+    t_idx = find(t_vec >= win.t(1) & t_vec <= win.t(2));
+    pair_vals = [];
+    for i = 1:length(idx1)
+        for j = 1:length(idx2)
+            if chan_list(idx1(i)) == chan_list(idx2(j)), continue; end
+            s1 = squeeze(tf(idx1(i), f_idx, t_idx, :));
+            s2 = squeeze(tf(idx2(j), f_idx, t_idx, :));
+            if ndims(s1) < 3 && size(s1,1)==length(f_idx)
+                s1 = reshape(s1, [length(f_idx), length(t_idx), size(tf,4)]);
+                s2 = reshape(s2, [length(f_idx), length(t_idx), size(tf,4)]);
+            end
+            im = imag(s1 .* conj(s2)); 
+            sum_im = sum(im, 3); sum_im2 = sum(im.^2, 3); sum_abs_im = sum(abs(im), 3);
+            w_db = (sum_im.^2 - sum_im2) ./ (sum_abs_im.^2 - sum_im2 + eps);
+            w_db(w_db < 0) = 0; 
+            pair_vals = cat(3, pair_vals, w_db);
+        end
+    end
+    out_avg = mean(pair_vals, 'all', 'omitnan');
+end
