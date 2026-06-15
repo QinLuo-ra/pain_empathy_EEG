@@ -1,0 +1,148 @@
+%% =========================================================================
+%   MODULE 1: 导入与基础清洗 (0.1Hz 高通滤波 + 坏导插值)
+%   输入: 1raw_data (.mff) | 输出: 3cleaned (.set)
+% =========================================================================
+clear; clc; base_path = 'D:\painempathy\data\TD_TF'; 
+sfpFile = 'D:\painempathy\data\EEGcode\tool\EGI_64_2-9years.sfp';
+path_raw = fullfile(base_path, '1rawdata'); path_clean = fullfile(base_path, '3cleaned');
+if ~exist(path_clean, 'dir'), mkdir(path_clean); end
+
+eeglab_path = 'E:\eeglab2023.0'; addpath(eeglab_path); [ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab; 
+
+files = [dir(fullfile(path_raw, '*.mff')); dir(fullfile(path_raw, '*.MFF'))];
+for i = 1:length(files)
+    outName = [files(i).name(1:end-4), '_cleaned.set'];
+    if exist(fullfile(path_clean, outName), 'file'), continue; end
+    try
+        EEG = pop_mffimport(fullfile(path_raw, files(i).name), {'code', 'mffkey_cel'}, 0, 0);
+        EEG = pop_chanedit(EEG, 'load', {sfpFile, 'filetype', 'sfp'});
+        orig_locs = EEG.chanlocs;
+        EEG = pop_eegfiltnew(EEG, 'locutoff', 0.1, 'hicutoff', 30); % 0.1Hz 滤波保留 LPP
+        EEG = pop_eegfiltnew(EEG, 'locutoff', 48, 'hicutoff', 52, 'revfilt', 1); % 陷波
+        EEG_temp = pop_clean_rawdata(EEG, 'FlatlineCriterion',5,'ChannelCriterion',0.8,'LineNoiseCriterion',4,'Highpass','off','BurstCriterion','off','WindowCriterion','off');
+        bad_chans = setdiff({orig_locs.labels}, {EEG_temp.chanlocs.labels});
+        EEG = pop_select(EEG, 'nochannel', unique([{'E61','E62','E63','E64','E29','E47','E65'}, bad_chans]));
+        EEG = pop_reref(EEG, []); EEG = pop_interp(EEG, orig_locs, 'spherical');
+        pop_saveset(EEG, 'filename', outName, 'filepath', path_clean);
+    catch ME, fprintf('Step 1/2 失败 [%s]: %s\n', files(i).name, ME.message); end
+end
+
+%% =========================================================================
+%   MODULE 2: Session 连续数据拼接 (物理合并)
+%   输入: 3cleaned | 输出: 4merged_cont
+% =========================================================================
+clear; clc; base_path = 'D:\painempathy\data\TD_TF';
+path_in = fullfile(base_path, '3cleaned'); path_out = fullfile(base_path, '4merged_cont');
+if ~exist(path_out, 'dir'), mkdir(path_out); end
+
+files = dir(fullfile(path_in, '*.set'));
+all_names = {files.name}; sub_ids = {};
+for j = 1:length(all_names), p = strsplit(all_names{j}, '_'); sub_ids{end+1} = p{1}; end
+unique_subs = unique(sub_ids);
+
+for i = 1:length(unique_subs)
+    subID = unique_subs{i}; outName = [subID, '_merged_cont.set'];
+    if exist(fullfile(path_out, outName), 'file'), continue; end
+    target_files = dir(fullfile(path_in, [subID, '*.set']));
+    [~, idx] = sort({target_files.name}); target_files = target_files(idx); % 确保 S1->S2
+    try
+        EEG = pop_loadset('filename', target_files(1).name, 'filepath', path_in);
+        for f = 2:length(target_files)
+            EEG_next = pop_loadset('filename', target_files(f).name, 'filepath', path_in);
+            EEG = pop_mergeset(EEG, EEG_next, 0); % 0 = recalc latency
+        end
+        pop_saveset(EEG, 'filename', outName, 'filepath', path_out);
+    catch ME, fprintf('Step 3.1 失败 [%s]: %s\n', subID, ME.message); end
+end
+
+%% =========================================================================
+%   MODULE 3: 权重转移 ICA (1Hz weights -> 0.1Hz data) - ERP分析到这一步就够了
+%   输入: 4merged_cont | 输出: 5ICAremoed
+% =========================================================================
+clear; clc; 
+
+% --- 1. 环境初始化 (独立运行的核心) ---
+eeglab_path = 'E:\eeglab2023.0'; % 确保这是你的 EEGLAB 路径
+if ~exist('pop_loadset', 'file')
+    addpath(eeglab_path);
+    [ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab; 
+end
+
+% --- 2. 路径定义 ---
+base_path = 'D:\painempathy\data\TD_TF';
+path_in   = fullfile(base_path, '4merged_cont2'); 
+path_out  = fullfile(base_path, '5ICAremoed');
+sfpFile   = 'D:\painempathy\data\EEGcode\tool\EGI_64_2-9years.sfp';
+
+if ~exist(path_out, 'dir'), mkdir(path_out); end
+
+% --- 3. 文件检查 ---
+files = dir(fullfile(path_in, '*.set'));
+if isempty(files)
+    error('在路径 %s 下未找到任何 .set 文件！', path_in);
+end
+
+% --- 4. 循环处理 ---
+for i = 1:length(files)
+    % 1. 提取核心 ID (如 S001)
+    parts = strsplit(files(i).name, '_');
+    subID = parts{1}; 
+    
+    % 2. 统一输出名称，确保唯一性
+    outName = [subID, '_ICA.set']; 
+    
+    if exist(fullfile(path_out, outName), 'file')
+        fprintf('  [跳过] %s 已存在最终版。\n', outName); continue;
+    end
+    
+    try
+        fprintf('>>> 正在处理: %s -> %s\n', files(i).name, outName);
+        EEG = pop_loadset('filename', files(i).name, 'filepath', path_in);
+        
+        % (中间的滤波、ICA、权重转移、位置补全逻辑不变...)
+        EEG_ica = pop_eegfiltnew(EEG, 'locutoff', 1); 
+        dataRank = min(rank(double(EEG_ica.data')), EEG_ica.nbchan - 1);
+        EEG_ica = pop_runica(EEG_ica, 'extended', 1, 'pca', dataRank, 'stop', 1e-7, 'interupt', 'off');
+        EEG.icawinv = EEG_ica.icawinv; EEG.icaweights = EEG_ica.icaweights; EEG.icasphere = EEG_ica.icasphere;
+        EEG = pop_chanedit(EEG, 'load', {sfpFile, 'filetype', 'sfp'}); 
+        EEG = pop_iclabel(EEG, 'default');
+        EEG = pop_icflag(EEG, [NaN NaN; 0.9 1; 0.9 1; 0.9 1; 0.9 1; 0.9 1; NaN NaN]);
+        rem_ics = find(EEG.reject.gcompreject);
+        EEG = pop_subcomp(EEG, rem_ics, 0);
+        
+        % 3. 保存为唯一名称
+        pop_saveset(EEG, 'filename', outName, 'filepath', path_out);
+        
+    catch ME, fprintf('ICA 失败 [%s]: %s\n', files(i).name, ME.message); end
+end
+
+fprintf('\n--- Module 3 处理完成 ---\n');
+%% =========================================================================
+%   MODULE 4: 分段
+%   input: 5ICAremoed | output: 6epoched (QA)
+% =========================================================================
+clear; clc; base_path = 'D:\painempathy\data\TD_TF';
+path_in = fullfile(base_path, '5ICAremoed_add'); path_out = fullfile(base_path, '6epoched_add');
+if ~exist(path_out, 'dir'), mkdir(path_out); end
+qa_report = table(); files = dir(fullfile(path_in, '*.set'));
+
+for i = 1:length(files)
+    try
+        EEG = pop_loadset('filename', files(i).name, 'filepath', path_in);
+        EEG = pop_epoch(EEG, {'sti3_1', 'sti3_2'}, [-0.5 1.5]);
+        EEG = pop_rmbase(EEG, [-250 0]);
+        pre_n = EEG.trials;
+        [EEG, rej] = pop_eegthresh(EEG, 1, 1:EEG.nbchan, -200, 200, -0.2, 0.8, 0, 1);
+        if (pre_n - length(rej)) < 25, fprintf('跳过 %s: 试次不足。\n', files(i).name); continue; end
+        EEG = pop_rejepoch(EEG, rej, 0);
+        pop_saveset(EEG, 'filename', [files(i).name(1:end-4), '_final.set'], 'filepath', path_out);
+        % 统计剩余试次
+        evs = {EEG.epoch.eventtype}; lats = {EEG.epoch.eventlatency}; types = {};
+        for s = 1:length(evs)
+            z = find(cell2mat(lats{s})==0); if ~isempty(z), types{end+1} = evs{s}{z}; end
+        end
+        newRow = table({files(i).name}, sum(strcmp(types, 'sti3_1')), sum(strcmp(types, 'sti3_2')), 'VariableNames', {'ID','Pain','Neutral'});
+        qa_report = [qa_report; newRow];
+    catch ME, fprintf('Step 4 失败 [%s]: %s\n', files(i).name, ME.message); end
+end
+writetable(qa_report, fullfile(base_path, 'Final_Sample_QA.csv'));
