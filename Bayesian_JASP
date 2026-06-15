@@ -1,0 +1,55 @@
+# Data input: a data frame with columns:
+#   CARS       - Childhood Autism Rating Scale total score (ASD group only)
+#   Age_mo     - Age in months
+#   FSIQ       - Full-Scale IQ (WISC-IV abbreviated)
+#   gender.scale - Gender (scaled/dummy coded)
+#   T_fz_df    - Frontal theta ERSP pain-minus-neutral difference score
+#   T_cz_df    - Central theta ERSP pain-minus-neutral difference score
+#
+# Load your data here, e.g.:
+# data <- read.csv("derived_data_ASD.csv")
+jaspRegression::RegressionLinearBayesian(
+          data = NULL,
+          version = "0.95.5",
+          formula = CARS ~ Age_mo + FSIQ + gender.scale + T_fz_df + T_cz_df,
+          isNuisance = ~ Age_mo + FSIQ + gender.scale,
+          bayesFactorOrder = "nullModelTop",
+          bayesFactorType = "BF10",
+          bernoulliParam = 0.5,
+          betaBinomialParamA = 1,
+          betaBinomialParamB = 1,
+          castilloParamU = 1,
+          descriptives = FALSE,
+          effectsType = "allModels",
+          gPriorAlpha = 3,
+          inclusionProbabilitiesPlot = FALSE,
+          jzsRScale = 0.354,
+          logPosteriorOddsPlot = FALSE,
+          marginalPosteriorPlot = FALSE,
+          modelComplexityPlot = FALSE,
+          modelPrior = "betaBinomial",
+          modelProbabilitiesPlot = FALSE,
+          modelsShown = "limited",
+          numModelsShown = 10,
+          numberOfModels = 0,
+          numericalAccuracy = 1000,
+          plotHeight = 320,
+          plotWidth = 480,
+          posteriorSummaryPlot = FALSE,
+          posteriorSummaryPlotCiLevel = 0.95,
+          posteriorSummaryPlotWithoutIntercept = FALSE,
+          posteriorSummaryTable = TRUE,
+          priorRegressionCoefficients = "jzs",
+          qqPlot = FALSE,
+          residualSdsSavedToData = FALSE,
+          residualSdsSavedToDataColumn = "",
+          residualsSavedToData = FALSE,
+          residualsSavedToDataColumn = "",
+          residualsVsFittedPlot = FALSE,
+          samples = 0,
+          samplingMethod = "bas",
+          seed = 1,
+          setSeed = FALSE,
+          summaryType = "averaged",
+          weights = NULL,
+          wilsonParamLambda = 1)
