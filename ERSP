@@ -1,0 +1,57 @@
+%% =========================================================================
+%          theta & alpha  ERSP
+%% =========================================================================
+clear; clc; close all;
+
+%% 1. 加载数据
+load('D:\painempathy\data\ASD_TF\7P_BC\P_BC_merged.mat');
+data = P_data;
+
+[num_subjects, num_conds, num_chans, num_freqs, num_times] = size(data);
+
+%% 2. 计算 ERSP
+baseline_range = [-0.2 0];
+baseline_idx = find(t >= baseline_range(1) & t <= baseline_range(2));
+
+baseline = mean(data(:,:,:,:,baseline_idx),5);
+ERSP = 10*log10(data ./ baseline);
+
+data = ERSP;
+
+%% 3. ROI定义
+theta_time_range = [0.18 0.28];
+theta_freq_range = [3 6];
+theta_chan_indices = [65 20 50];
+
+alpha_time_range = [0.4 0.8];
+alpha_freq_range = [7 10];
+alpha_chan_indices = [28 34 42];
+
+theta_time_indices = find(t >= theta_time_range(1) & t <= theta_time_range(2));
+theta_freq_indices = find(f >= theta_freq_range(1) & f <= theta_freq_range(2));
+
+alpha_time_indices = find(t >= alpha_time_range(1) & t <= alpha_time_range(2));
+alpha_freq_indices = find(f >= alpha_freq_range(1) & f <= alpha_freq_range(2));
+
+%% 4. 提取ERSP
+theta_Theta_ERSP = zeros(num_subjects,num_conds);
+alpha_Alpha_ERSP = zeros(num_subjects,num_conds);
+
+for i = 1:num_subjects
+    for j = 1:num_conds
+
+        theta_data = squeeze(data(i,j,theta_chan_indices,theta_freq_indices,theta_time_indices));
+        theta_Theta_ERSP(i,j) = mean(theta_data(:));
+
+        alpha_data = squeeze(data(i,j,alpha_chan_indices,alpha_freq_indices,alpha_time_indices));
+        alpha_Alpha_ERSP(i,j) = mean(alpha_data(:));
+
+    end
+end
+
+%% 5. output
+disp('theta Theta ERSP:');
+disp(theta_Theta_ERSP);
+
+disp('alpha Alpha ERSP:');
+disp(alpha_Alpha_ERSP);
