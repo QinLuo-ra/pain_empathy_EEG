@@ -1,0 +1,258 @@
+%% 构建eventlist
+clear;clc
+
+%定义数据所在的路径
+data_path = 'D:\painempathy\data\TD_TF\5ICAremoed';
+%定义数据的保存路径
+save_path = 'D:\painempathy\data\TD_TF\ERP\6eventlisted';
+%将数据所在的路径定义为工作路径
+cd(data_path)
+%筛选当前路径下所有的set结尾的文件
+files = dir('*.set');
+%提取文件名
+fn = {files.name};
+%创建alleeg数据集
+ALLEEG = [];
+
+%对于每个被试
+for i = 1:length(fn)
+   %导入原始数据
+    fprintf(fn{i})
+    % 构建完整的文件路径
+    filePath = fullfile(data_path, fn{i});
+    
+    % 使用 pop_mffimport 函数导入数据
+    EEG = pop_loadset('filename',fn{i},'filepath',data_path);
+    EEG = eeg_checkset( EEG ); 
+    EEG  = pop_editeventlist( EEG , 'AlphanumericCleaning', 'on', 'BoundaryNumeric', { -99}, 'BoundaryString', {'boundary' }) %'ExportEL', 'fn.txt', 'List', 'G:\Workspace\EEG\7eventlist\TD\eventlist2.txt', 'SendEL2', 'EEG&Text', 'UpdateEEG', 'askUser', 'Warning', 'on' );  
+    [ALLEEG EEG CURRENTSET] = pop_newset(ALLEEG, EEG, 1,'savenew','save_path','gui','off'); 
+    EEG = eeg_checkset( EEG ); 
+    setname = [fn{i}(1:end-4),'set'];
+    %保存set格式的数据
+    EEG = pop_saveset( EEG, 'filename',setname,'filepath',save_path);
+end
+
+   
+
+%% 建bins
+clear;clc
+%定义数据所在的路径
+data_path = 'D:\painempathy\data\TD_TF\ERP\6eventlisted';
+%定义数据的保存路径
+save_path = 'D:\painempathy\data\TD_TF\ERP\7bin';
+%将数据所在的路径定义为工作路径
+cd(data_path)
+%筛选当前路径下所有的vhdr结尾的文件
+files = dir('*.set');
+%提取文件名
+fn = {files.name};
+%创建alleeg数据集
+ALLEEG = [];
+%初始化当前数据集索引
+currentSetIndex = 1;
+
+%对于每个被试
+for i = 1:length(fn)
+    %导入set格式的数据
+    EEG = pop_loadset('filename', fn{i}, 'filepath', data_path);
+    EEG = eeg_checkset(EEG); 
+    %建bins
+    EEG = pop_binlister(EEG, 'BDF', 'D:\painempathy\data\TD_TF\ERP\7bin\bin.txt', 'ExportEL', 'fn.txt', 'IndexEL', 1, 'SendEL2', 'EEG&Text', 'Voutput', 'EEG');
+    [ALLEEG, EEG, currentSetIndex] = eeg_store(ALLEEG, EEG, currentSetIndex);
+    EEG = eeg_checkset(EEG); 
+    setname = [fn{i}(1:end-4), 'set'];
+    %保存set格式的数据
+    EEG = pop_saveset( EEG, 'filename',setname,'filepath',save_path);
+end
+
+
+
+%% 分段与基线矫正
+clear; clc;
+% --- 路径定义 ---
+data_path = 'D:\painempathy\data\TD_TF\ERP\7bin';
+save_path = 'D:\painempathy\data\TD_TF\ERP\8_epoch';
+if ~exist(save_path, 'dir'), mkdir(save_path); end
+
+cd(data_path);
+files = dir('*.set');
+fn = {files.name};
+ALLEEG = [];
+currentSetIndex = 1;
+
+for i = 1:length(fn)
+    fprintf('>>> 正在分段: %s\n', fn{i});
+    EEG = pop_loadset('filename', fn{i}, 'filepath', data_path);
+    EEG = eeg_checkset(EEG); 
+    
+    % --- 核心操作：分段 (使用 ERPLAB 的 pop_epochbin) ---
+    EEG = pop_epochbin( EEG , [-200.0  1000.0],  'pre'); 
+    
+    [ALLEEG, EEG, currentSetIndex] = eeg_store(ALLEEG, EEG, currentSetIndex);
+    EEG = eeg_checkset(EEG); 
+    
+    % 保存
+    setname = [fn{i}(1:end-4), '_ep.set'];
+    EEG = pop_saveset(EEG, 'filename', setname, 'filepath', save_path);
+end
+fprintf('\n--- 分段完成，存入 8_epoch ---\n');
+
+
+%%各 Bin 独立达标过滤 (Bin5 >= 30 & Bin6 >= 30)
+clear; clc;
+data_path = 'D:\painempathy\data\TD_TF\ERP\8_epoch_test';
+save_path = 'D:\painempathy\data\TD_TF\ERP\9_eject';
+if ~exist(save_path, 'dir'), mkdir(save_path); end
+
+cd(data_path);
+files = dir('*.set');
+fn = {files.name};
+qa_report = table(); 
+
+for i = 1:length(fn)
+    fprintf('\n>>> 处理中 [%d/%d]: %s\n', i, length(fn), fn{i});
+    
+    % 1. 载入并彻底清理旧标记
+    EEG = pop_loadset('filename', fn{i}, 'filepath', data_path);
+    EEG.reject.rejmanual = [];
+    EEG.reject.rejthresh = [];
+    EEG = eeg_checkset(EEG);
+
+ % 假设你的 Epoch 时间范围是 -200ms 到 800ms（请根据你真实的 epoch 设置修改）
+% 如果想检查全时段，请务必写全 [start end]
+EEG = pop_artextval(EEG, 'Channel', 1:EEG.nbchan, 'Flag', 1, ...
+      'Threshold', [-150 150], 'Twindow', [EEG.xmin*1000 EEG.xmax*1000]);
+    
+    % --- 【核心逻辑修正：按 Bin 预计算】 ---
+    % 获取当前所有 trials 的 bin 归属情况
+    % 注意：pop_artextval 标记的是 trial 索引，我们要看哪些 trial 没被标记
+    current_rej = EEG.reject.rejmanual; 
+    keep_idx = find(current_rej == 0); % 没被标记为坏段的索引
+    
+    % 提取幸存 trial 的 Bin 编号
+    survived_bins = [EEG.event(keep_idx).bini]; 
+    
+    % 分别统计 Bin 5 和 Bin 6 的幸存数量
+    n_bin5 = sum(survived_bins == 5);
+    n_bin6 = sum(survived_bins == 6);
+    survived_total = length(keep_idx);
+
+    % 3. 【严苛拦截】必须 bin5 >= 30 且 bin6 >= 30
+    if n_bin5 >=10 && n_bin6 >=10
+        try
+            % 4. 物理剔除
+            EEG = pop_rejepoch(EEG, current_rej, 0); 
+            
+            % 5. 记录 QA
+            newRow = table({fn{i}}, n_bin5, n_bin6, survived_total, ...
+                     'VariableNames', {'ID','Neutral_Bin5','Pain_Bin6','Total_Survived'});
+            qa_report = [qa_report; newRow];
+            
+            % 6. 保存达标数据
+            setname = [fn{i}(1:end-4), '_final.set'];
+            pop_saveset(EEG, 'filename', setname, 'filepath', save_path);
+            fprintf('  ✅ [达标] Bin5:%d, Bin6:%d. 已保存。\n', n_bin5, n_bin6);
+            
+        catch ME
+            fprintf('  ❌ [运行时错误] %s: %s\n', fn{i}, ME.message);
+        end
+    else
+        % 不达标直接跳过
+        fprintf('  ⚠️ [拦截剔除] %s: 试次不足 (Bin5:%d, Bin6:%d)，已跳过。\n', ...
+            fn{i}, n_bin5, n_bin6);
+    end
+end
+
+writetable(qa_report, fullfile(save_path, 'Cleaning_Report_Strict.csv'));
+fprintf('\n--- 严苛清洗完毕！请检查 9_eject 文件夹。 ---\n');
+%%===========================================================================
+%%叠加平均
+clear;clc
+% 定义数据所在的路径
+data_path = 'D:\painempathy\data\TD_TF\ERP\9_eject_test';
+% 定义数据的保存路径
+save_path = 'D:\painempathy\data\TD_TF\ERP\10ERP_AVG';
+% 将数据所在的路径定义为工作路径
+cd(data_path)
+% 筛选当前路径下所有的vhdr结尾的文件
+files = dir('*.set');
+% 提取文件名
+fn = {files.name};
+% 创建alleeg数据集
+ALLEEG = [];
+% 初始化当前数据集索引
+currentSetIndex = 1;
+
+% 对于每个被试
+for i = 1:length(fn)
+    % 导入set格式的数据
+    EEG = pop_loadset('filename', fn{i}, 'filepath', data_path);
+    EEG = eeg_checkset(EEG); 
+    % 叠加平均
+    ERP = pop_averager(EEG, 'Criterion', 'good', 'DQ_custom_wins', 0, 'DQ_flag', 1, 'DQ_preavg_txt', 0, 'ExcludeBoundary', 'on', 'SEM', 'on');
+    % 构建保存文件路径和文件名
+    file_name = fn{i}(1:end-4); % 去除文件扩展名
+    save_file_path = fullfile(save_path, [file_name, '.erp']);
+    
+    % 创建文件夹（如果不存在）
+    if ~exist(save_path, 'dir')
+        mkdir(save_path);
+    end
+       
+    % 保存ERP数据
+    ERP = pop_savemyerp(ERP, 'erpname', file_name, 'filename', [file_name, '.erp'], 'filepath', save_path, 'Warning', 'on');
+end
+
+
+
+clear;
+eeglab;
+
+%% =========================================================================
+%   ERP MODULE 3: Individual Difference Waves (Independent Storage)
+%   逻辑：1. 读取平均波形 | 2. 计算 Bin 7 (P-N) | 3. 存入新文件夹 9ERP_DIF
+% =========================================================================
+clear; clc; 
+
+% --- 1. 环境初始化 ---
+eeglab_path = 'E:\eeglab2023.0'; 
+if ~exist('pop_loadset', 'file'), addpath(eeglab_path); eeglab; end
+
+% --- 2. 路径定义 ---
+base_path = 'D:\painempathy\data\TD_TF\ERP';
+path_in   = fullfile(base_path, '10ERP_AVG'); 
+path_out  = fullfile(base_path, '11ERP_DIF'); 
+
+if ~exist(path_out, 'dir'), mkdir(path_out); end
+
+% --- 3. 获取文件列表 ---
+files = dir(fullfile(path_in, '*.erp'));
+if isempty(files)
+    error('在路径 %s 中未找到 .erp 文件！', path_in);
+end
+
+fprintf('>>> 正在生成差异波并存入 %s...\n', path_out);
+
+% --- 4. 循环处理 ---
+for i = 1:length(files)
+    try
+        % A. 加载个体 ERP 文件
+        ERP = pop_loaderp('filename', files(i).name, 'filepath', path_in);
+        
+        % B. 使用 Bin Operator 计算差异波
+        % Bin 6 (3pain) - Bin 5 (3nopain)
+        ERP = pop_binoperator(ERP, {'bin7 = bin6 - bin5 label Pain_Minus_Neutral'});
+        
+        % C. 保存到新文件夹 (保持原文件名)
+        outName = files(i).name; 
+        ERP = pop_savemyerp(ERP, 'erpname', [ERP.erpname, '_DIF'], 'filename', outName, ...
+            'filepath', path_out, 'Warning', 'off');
+            
+        fprintf('  [成功] %s 已处理并存入 9ERP_DIF\n', outName);
+        
+    catch ME
+        fprintf('  [失败] %s: %s\n', files(i).name, ME.message);
+    end
+end
+
+fprintf('\n--- 差异波提取完成！共处理 %d 个文件。 ---\n', length(files));
